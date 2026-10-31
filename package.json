@@ -1,0 +1,1 @@
+{"private":true,"scripts":{"test":"node tests/test_extension.cjs && node tests/test_browser_range.cjs && node tests/test_capture.cjs && node tests/test_continuous.cjs && node tests/test_speech_v7.cjs && node tests/test_speech_pacing.cjs && node tests/test_content_v7.cjs && node tests/test_progress_ui.cjs"},"devDependencies":{"jsdom":"30.1.3"}}

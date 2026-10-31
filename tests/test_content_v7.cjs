@@ -1,0 +1,34 @@
+const {JSDOM}=require('jsdom'),fs=require('node:fs'),assert=require('node:assert/strict'),path=require('node:path');
+const flush=async()=>{for(let i=0;i<15;i++)await Promise.resolve()};
+(async()=>{
+ const dom=new JSDOM('<div data-e2e="feed-active-video" data-e2e-vid="1234567890123456789"><div class="player" data-xgplayerid="parent"><video data-xgplayerid="media"></video></div></div>',{url:'https://www.douyin.com/jingxuan',runScripts:'outside-only',pretendToBeVisual:true});
+ const w=dom.window,v=w.document.querySelector('video'),intervals=[],timeouts=[],calls=[];let now=0,paused=false,ended=false,pauses=0,plays=0,listener,removed=false,offline=false,missing=false,invalid=false;
+ let returnedPending=1,completedIds=[],jobState='working',coverage=[],ready=false,canPlay=false;
+ const line={id:'a',start:0,end:1.2,source:'你好。',translation:'Xin chào.'};
+ w.Date.now=()=>now;w.setInterval=fn=>(intervals.push(fn),intervals.length);w.clearInterval=()=>{};w.setTimeout=fn=>(timeouts.push(fn),timeouts.length);w.clearTimeout=()=>{};
+ let returnedLines=[line];
+ Object.defineProperty(v,'duration',{get:()=>60});Object.defineProperty(v,'paused',{get:()=>paused});Object.defineProperty(v,'ended',{get:()=>ended});v.currentTime=.3;v.muted=true;
+ v.play=()=>{plays++;paused=false;v.dispatchEvent(new w.Event('play'));return Promise.resolve()};v.pause=()=>{pauses++;paused=true;v.dispatchEvent(new w.Event('pause'))};
+ v.getBoundingClientRect=()=>({width:600,height:400,left:0,right:600,top:0,bottom:400});
+ const nextFeed=w.document.createElement('div');nextFeed.setAttribute('data-e2e-vid','1234567890123456790');nextFeed.setAttribute('data-e2e','feed-video');
+ nextFeed.innerHTML='<div class="player" data-xgplayerid="next"><video></video></div>';w.document.body.append(nextFeed);const nextVideo=nextFeed.querySelector('video');
+ nextVideo.getBoundingClientRect=()=>({width:600,height:400,left:0,right:600,top:900,bottom:1300});Object.defineProperty(nextVideo,'duration',{get:()=>60});Object.defineProperty(nextVideo,'paused',{get:()=>false});Object.defineProperty(nextVideo,'ended',{get:()=>false});
+ w.chrome={runtime:{id:'test',onMessage:{addListener:fn=>listener=fn,removeListener:fn=>{if(fn===listener)removed=true}},sendMessage:async m=>{calls.push(m);if(invalid)throw Error('Extension context invalidated');
+  if(m.type==='resume')return {enabled:false};if(m.type==='direct-start')return {job:'job-'+calls.filter(x=>x.type==='direct-start').length};
+  if(m.type==='direct-poll'){if(offline)return {error:'Không kết nối được app.'};if(missing){missing=false;return {error:'Phiên đã hết. Bấm dịch lại video.'}}return {state:jobState,duration:60,coverage,progress:{ready,can_play:canPlay,done:ready,label:'Đang dịch',percent:10,coverage_text:'Đã xử lý 6 / 60 giây',speech:{enabled:true,ready:0,total:1}},lines:returnedLines,speak:true,playback_mode:'complete'}}
+  if(m.type==='video-changed')return {ok:true};if(m.type==='timeline')return {protocol:7,speaking:true,hold:true,caption:line,completed_ids:completedIds,pending:returnedPending,audio_time:1,audio_volume:1};return {ok:true};}}};
+ const script=fs.readFileSync(path.join(__dirname,'../extension/content-v7.js'),'utf8');w.eval(script);const controller=w.__ligterVoiceController;w.eval(script);assert.equal(w.__ligterVoiceController,controller,'re-injection must not duplicate controllers');
+ w.dispatchEvent(new w.MessageEvent('message',{source:w,data:{type:'LIGTER_MEDIA',clips:['1234567890123456789','1234567890123456790'].map(id=>({id,sources:['https://a.douyinvod.com/test'],duration:60}))}}));
+ await new Promise(resolve=>listener({type:'ligter-v7-direct'},{id:'test'},resolve));await flush();assert.equal(pauses,1,'one user-requested pause while preparing the whole video');assert.equal(plays,0);
+ assert(!calls.some(x=>x.type==='direct-warm'),'no adjacent video is prepared');
+ const tick=async()=>{now+=250;await intervals[1]();await flush()};
+ await tick();assert.equal(calls.filter(x=>x.type==='timeline').length,0,'no narration until complete preparation');
+ canPlay=true;jobState='working';await timeouts.at(-1)();await flush();
+ const host=w.document.querySelector('#ligter-voice-overlay-v7');assert.equal(host.parentElement.className,'player');
+ await new Promise(resolve=>listener({type:'ligter-play-prepared'},{id:'test'},resolve));assert.equal(plays,1);assert.equal(v.currentTime,0);await tick();assert.equal(pauses,1,'no repeated source pause');assert.equal(v.volume,.25);
+ const count=calls.filter(x=>x.type==='direct-start').length;
+ v.closest('[data-e2e-vid]').setAttribute('data-e2e','feed-video');v.getBoundingClientRect=()=>({width:600,height:400,left:0,right:600,top:-500,bottom:-100});nextFeed.setAttribute('data-e2e','feed-active-video');nextVideo.getBoundingClientRect=()=>({width:600,height:400,left:0,right:600,top:0,bottom:400});
+ intervals[0]();await flush();await tick();assert.equal(calls.filter(x=>x.type==='direct-start').length,count,'scrolling never creates the next job');assert(calls.some(x=>x.type==='video-changed'));assert.equal(host.isConnected,false);assert.equal(v.volume,1,'restore old volume');
+ assert.equal(plays,1,'new video is never automatically played by translation');assert.equal(pauses,1,'new video is never paused by old preparation');
+ w.close();console.log('PASS selected-video-only controller, one initial preparation pause, ready-only voice/playback, no auto prefetch, scroll cleanup and no control of the next video');
+})().catch(e=>{console.error(e);process.exitCode=1});

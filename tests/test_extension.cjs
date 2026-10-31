@@ -1,0 +1,11 @@
+const assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs'),path=require('node:path');
+const root=path.join(__dirname,'..','extension');
+function fixture(){let handlers={},messages=[];const clip={aweme_id:'1234567890123456789',desc:'Video thử',video:{duration:60000,bit_rate_audio:[{audio_meta:{bitrate:128000,url_list:['https://a.douyinvod.com/high']}},{audio_meta:{bitrate:32000,url_list:['https://a.douyinvod.com/low']}}],play_addr:{url_list:['https://a.douyinvod.com/video']}}};const window={postMessage:m=>messages.push(m),addEventListener:(type,fn)=>handlers[type]=fn,fetch:async()=>({url:'https://www.douyin.com/aweme/v1/web/aweme/detail/',clone:()=>({json:async()=>({aweme_detail:clip})})})};class XHR{}XHR.prototype.open=function(){};const document={readyState:'complete',getElementById:id=>id==='RENDER_DATA'?{textContent:encodeURIComponent(JSON.stringify({data:[clip]}))}:null,querySelector:()=>null};return {window,document,handlers,messages,clip,XMLHttpRequest:XHR,location:{origin:'https://www.douyin.com'}}}
+(async()=>{
+ const c=fixture();vm.createContext(c);vm.runInContext(fs.readFileSync(path.join(root,'media-hook.js'),'utf8'),c);
+ assert.equal(c.messages.length,1);assert.equal(c.messages[0].clips[0].sources[0],'https://a.douyinvod.com/low');assert.equal(c.messages[0].clips[0].duration,60);
+ await c.window.fetch('unused');await new Promise(r=>setImmediate(r));assert.equal(c.messages.length,2);
+ c.handlers.message({source:c.window,data:{type:'LIGTER_REQUEST_MEDIA',id:c.clip.aweme_id}});assert.equal(c.messages.length,3);
+ const manifest=JSON.parse(fs.readFileSync(path.join(root,'manifest.json')));for(const x of manifest.content_scripts)for(const name of x.js)assert(fs.existsSync(path.join(root,name)));assert(manifest.permissions.includes('sidePanel'));assert(!manifest.host_permissions.includes('<all_urls>'));
+ console.log('PASS media metadata from initial state, fetch interception, audio bitrate priority, cached metadata reply, manifest resources');
+})().catch(e=>{console.error(e);process.exitCode=1});

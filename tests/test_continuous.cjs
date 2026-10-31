@@ -1,0 +1,22 @@
+const assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs');
+const session={},local={token:'test'},sent=[],started=[],cancelled=[],injected=[];let handler,updated,removed,audio=false,jobCount=0,slowRelease,entered;
+const storage=bag=>({get:async key=>typeof key==='string'?{[key]:bag[key]}:{...bag},set:async x=>Object.assign(bag,x),remove:async keys=>{for(const k of [keys].flat())delete bag[k]}});
+const chrome={storage:{session:storage(session),local:storage(local)},runtime:{id:'test',getURL:p=>'chrome-extension://test/'+p,onMessage:{addListener:f=>handler=f},sendMessage:async m=>{sent.push(m);return {protocol:7}}},offscreen:{hasDocument:async()=>audio,createDocument:async()=>audio=true},scripting:{executeScript:async x=>injected.push(x)},tabs:{query:async()=>[{id:7,url:'https://www.douyin.com/jingxuan'}],sendMessage:async(id,m)=>{sent.push(m);return {ok:true}},onUpdated:{addListener:f=>updated=f},onRemoved:{addListener:f=>removed=f}}};
+const fetch=async(url,o)=>{const b=JSON.parse(o.body);let data={ok:true};if(url.endsWith('/status'))data={ready:true,version:'0.8.3',voice:'female',speak:true};if(url.endsWith('/jobs/start')){started.push(b);if(b.video_id==='slow')await new Promise(r=>{slowRelease=r;entered?.()});data={job:'j'+(++jobCount)}}if(url.endsWith('/jobs/cancel'))cancelled.push(b.job);return {ok:true,json:async()=>data}};
+vm.runInNewContext(fs.readFileSync('extension/background.js','utf8'),{chrome,fetch,AbortSignal,crypto:require('node:crypto').webcrypto});
+const popup={id:'test',url:'chrome-extension://test/popup.html'},content={id:'test',frameId:0,tab:{id:7}};
+const call=(type,sender=popup,data={})=>new Promise(r=>handler({target:'background',type,...data},sender,r));
+(async()=>{
+ assert.equal((await call('start')).enabled,true);const a=await call('direct-start',content,{video_id:'a',position:20});assert.equal(a.job,'j1');assert.equal(started[0].prepare_full,true);assert.equal(started[0].position,0);
+ assert((await call('direct-warm',content,{video_id:'b'})).error);assert.equal(started.length,1,'no prefetch of adjacent videos');
+ assert((await call('direct-start',content,{video_id:'b'})).error);assert.equal(started.length,1,'unselected clips cannot start within the pinned session');
+ assert((await call('play-prepared')).error);session.snapshot={id:'j1',progress:{ready:true,can_play:true}};session.snapshot_at=Date.now();assert((await call('play-prepared')).message);assert(sent.some(x=>x.type==='ligter-play-prepared'));
+ assert.equal((await call('panel-state')).snapshot.id,'j1','popup gets progress for its current job');
+ session.snapshot={id:'old'};assert.equal((await call('panel-state')).snapshot,null,'old video progress is never shown for the new job');
+ const n=sent.length;await call('timeline-stop',content,{job:'old'});assert.equal(sent.length,n,'old cleanup cannot stop this video');
+ await call('video-changed',content);assert.equal(session.active,undefined);assert(cancelled.includes('j1'));
+ const before=injected.length;await updated(7,{status:'complete'},{url:'https://www.douyin.com/video/next'});assert.equal(injected.length,before,'scroll/navigation does not enable translation');
+ await call('start');await call('direct-start',content,{video_id:'b'});await updated(7,{status:'loading'});assert.equal(session.active,undefined,'navigation cancels selected work');
+ await call('start');const waiting=new Promise(r=>entered=r),slow=call('direct-start',content,{video_id:'slow'});await waiting;await call('stop');slowRelease();assert.equal((await slow).superseded,true);assert.equal(session.active,undefined,'a late request cannot revive cancelled processing');
+ console.log('PASS explicit per-video start, full preparation, zero next-video prefetch, pinned identity, ready-only playback, progress isolation, navigation/scroll cancellation and late-response cleanup');
+})().catch(e=>{console.error(e);process.exitCode=1});

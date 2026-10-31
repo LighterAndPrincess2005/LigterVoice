@@ -1,0 +1,17 @@
+const {JSDOM}=require('jsdom'),fs=require('node:fs'),assert=require('node:assert/strict');
+const flush=async()=>{for(let i=0;i<20;i++)await Promise.resolve()};
+(async()=>{
+ const dom=new JSDOM(fs.readFileSync('extension/popup.html','utf8'),{url:'https://example.invalid',runScripts:'outside-only'}),w=dom.window,timers=[],calls=[];
+ let state={active:null,snapshot:null},now=10000;w.Date.now=()=>now;w.setTimeout=f=>(timers.push(f),timers.length);
+ w.chrome={storage:{local:{get:async()=>({token:'test-only'}),set:async()=>{}}},runtime:{sendMessage:async m=>{calls.push(m);return m.type==='connect'?{ready:true,voice:'female',speak:true,message:'Đã kết nối.'}:m.type==='panel-state'?state:{message:'Đã thực hiện.'}}},tabs:{query:async()=>[]},sidePanel:{open:async()=>{}}};
+ w.eval(fs.readFileSync('extension/progress-view.js','utf8'));w.eval(fs.readFileSync('extension/popup.js','utf8'));await flush();assert.equal(calls.filter(x=>x.type==='start').length,0,'opening popup must not start translation');
+ const p={phase:'recognize',label:'Đang nhận diện lời nói',percent:0,indeterminate:true,coverage_text:'Đã xử lý 00:00 / 03:00 audio',interval_text:'00:00–00:13',speech:{enabled:true,ready:0,total:0},phase_seconds:2,ready:false,done:false};
+ state={active:{job:'a'},snapshot:{id:'a',state:'working',progress:p},snapshot_at:now};await timers.at(-1)();await flush();
+ const bar=w.document.querySelector('progress');assert(!bar.hasAttribute('value'));assert.equal(w.document.querySelector('#progress').hidden,false);assert(w.document.querySelector('#start').disabled);assert(w.document.querySelector('#play').hidden);
+ Object.assign(p,{indeterminate:false,percent:23.3,coverage_text:'Đã xử lý 00:42 / 03:00 audio'});await timers.at(-1)();await flush();assert.equal(bar.value,23.3);assert.equal(w.document.querySelector('.progress-percent').textContent,'23%');
+ now+=7000;await timers.at(-1)();await flush();assert(w.document.querySelector('.progress-phase').textContent.includes('Mất cập nhật'));assert.equal(bar.value,23.3,'stalled progress does not advance itself');
+ Object.assign(p,{can_play:true,playable_seconds:7});state.snapshot_at=now;await timers.at(-1)();await flush();assert.equal(w.document.querySelector('#play').textContent,'Xem ngay');assert.equal(w.document.querySelector('#play').hidden,false);state.active.wait_full=true;await timers.at(-1)();await flush();assert.equal(w.document.querySelector('#play').hidden,true,'full option still waits for entire preparation');state.active.wait_full=false;
+ Object.assign(p,{phase:'done',label:'Đã chuẩn bị xong',percent:100,can_play:true,ready:true,done:true});state.snapshot_at=now;state.snapshot.state='ready';await timers.at(-1)();await flush();assert.equal(w.document.querySelector('#play').hidden,false);assert.equal(w.document.querySelector('#start').hidden,true);await w.document.querySelector('#play').onclick();await flush();assert(calls.some(x=>x.type==='play-prepared'));
+ state={active:null,snapshot:null};await timers.at(-1)();await flush();assert(w.document.querySelector('#progress').hidden);assert.equal(w.document.querySelector('#start').disabled,false);
+ assert.equal(calls.filter(x=>x.type==='start').length,0);w.close();console.log('PASS measured progress rendering, no implicit work, real percent, indeterminate first stage, stale connection, ready-only action and compact popup state');
+})().catch(e=>{console.error(e);process.exitCode=1});

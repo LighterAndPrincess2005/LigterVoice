@@ -1,0 +1,25 @@
+# Credentials and user data
+.env
+.env.*
+settings*
+cache/
+GhiChu/
+media-diagnostics.json
+# Runtime and generated outputs
+.venv/
+node_modules/
+__pycache__/
+*.py[cod]
+*.log
+*.exe
+*.dll
+*.mp3
+*.wav
+*.mp4
+*.zip
+_internal/
+models/
+backups/
+build*/
+release*/
+outputs/
