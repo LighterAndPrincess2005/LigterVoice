@@ -38,6 +38,7 @@ class Center(QMainWindow):
         quit_action=QAction('Thoát Ligter Voice',self);quit_action.triggered.connect(self.exit);menu.addAction(quit_action)
         self.tray.setContextMenu(menu);self.tray.setToolTip('Ligter Voice đang chạy nền');self.tray.activated.connect(lambda r:self.show_center() if r==QSystemTrayIcon.ActivationReason.DoubleClick else None);self.tray.show()
         self.timer=QTimer(self);self.timer.timeout.connect(self.tick);self.timer.start(500);backend.engine.local_speech.start()
+        if backend.settings.get('asr')=='local':backend.engine.local_asr.start()
 
     def save(self):
         backend.settings.update(key=self.key.text().strip(),provider='groq',language=['auto','zh','en'][self.language.currentIndex()],preload_all=False)

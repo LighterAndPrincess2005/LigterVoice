@@ -2,7 +2,7 @@ import io
 import unittest
 import wave
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 from local_asr import LocalRecognizer
 
 
@@ -23,6 +23,15 @@ class RecognitionQualityTest(unittest.TestCase):
         recognizer=LocalRecognizer();recognizer.model=Mock()
         recognizer.model.transcribe.side_effect=[(iter(parts),SimpleNamespace(language='zh')) for parts in passes]
         return recognizer
+
+    def test_background_warm_and_foreground_warm_load_model_once(self):
+        import sys
+        constructor=Mock(return_value=Mock())
+        r=LocalRecognizer()
+        with patch.dict(sys.modules,{'faster_whisper':SimpleNamespace(WhisperModel=constructor)}):
+            r.start();r.warm();r.warm()
+            self.assertEqual(constructor.call_count,1);self.assertEqual(r.state,'ready')
+            self.assertTrue(constructor.call_args.kwargs['local_files_only'])
 
     def test_empty_vad_result_is_audited_without_vad(self):
         r=self.recognizer([[],[segment()]])

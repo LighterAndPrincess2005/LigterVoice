@@ -48,7 +48,7 @@ class PipelineTest(unittest.TestCase):
     def test_timestamp_and_translation_mapping(self):
         a=response({'segments':[{'start':.1,'end':1.4,'text':'你好','no_speech_prob':.1},{'start':1.5,'end':3,'text':'Welcome','no_speech_prob':.1}]})
         b=response({'choices':[{'message':{'content':json.dumps({'translations':[{'id':1,'text':'Chào mừng'},{'id':0,'text':'Xin chào'}]})}}]})
-        with patch('engine.requests.post',side_effect=[a,b]):
+        with patch('engine.HttpClient.post',side_effect=[a,b]):
             lines=self.e.groq(b'WAV',self.cfg,16,20)
         self.assertEqual(lines[0]['translation'],'Xin chào')
         self.assertEqual(lines[1]['translation'],'Chào mừng')
@@ -56,14 +56,14 @@ class PipelineTest(unittest.TestCase):
     def test_missing_translation_rejected(self):
         a=response({'segments':[{'start':0,'end':1,'text':'Hello'}]})
         b=response({'choices':[{'message':{'content':'{"translations":[]}'}}]})
-        with patch('engine.requests.post',side_effect=[a,b]),self.assertRaises(ValueError):
+        with patch('engine.HttpClient.post',side_effect=[a,b]),self.assertRaises(ValueError):
             self.e.groq(b'WAV',self.cfg,0,1)
 
     def test_transient_asr_failure_retries_without_losing_audio(self):
         unavailable=Mock(ok=False,status_code=503)
         recognized=response({'segments':[{'start':0,'end':1,'text':'Hello!'}]});recognized.status_code=200
         translated=response({'choices':[{'message':{'content':'{"translations":[{"id":0,"text":"Xin chào!"}]}'}}]})
-        with patch('engine.requests.post',side_effect=[unavailable,recognized,translated]) as post,patch('engine.time.sleep'):
+        with patch('engine.HttpClient.post',side_effect=[unavailable,recognized,translated]) as post,patch('engine.time.sleep'):
             lines=self.e.groq(b'original-audio',self.cfg,0,1)
         self.assertEqual(lines[0]['translation'],'Xin chào!')
         self.assertEqual(post.call_args_list[0].kwargs['files'],post.call_args_list[1].kwargs['files'])
@@ -72,7 +72,7 @@ class PipelineTest(unittest.TestCase):
         import requests
         recognized={'segments':[{'start':0,'end':1,'text':'Hello!'}]}
         translated=response({'choices':[{'message':{'content':'{"translations":[{"id":0,"text":"Xin chào!"}]}'}}]})
-        with patch('engine.requests.post',side_effect=[requests.Timeout(),requests.Timeout(),translated]),patch('engine.time.sleep'),patch.object(self.e.local_asr,'recognize',return_value=recognized) as local:
+        with patch('engine.HttpClient.post',side_effect=[requests.Timeout(),requests.Timeout(),translated]),patch('engine.time.sleep'),patch.object(self.e.local_asr,'recognize',return_value=recognized) as local:
             self.assertEqual(self.e.groq(b'original',self.cfg,0,1)[0]['translation'],'Xin chào!')
             local.assert_called_once_with(b'original','zh')
 
@@ -228,7 +228,7 @@ class PipelineTest(unittest.TestCase):
         valid=response({'choices':[{'message':{'content':'{"lines":[{"from":0,"translation":"Xin chào!","complete":true}]}'}}]})
         valid.status_code=200
         words=[{'word':'Hello!','start':0,'end':1}]
-        with patch('engine.requests.post',side_effect=[limited,valid]) as post,patch('engine.time.sleep'):
+        with patch('engine.HttpClient.post',side_effect=[limited,valid]) as post,patch('engine.time.sleep'):
             first=self.e.translate_words(words,self.cfg,0,2)
             second=self.e.translate_words(words,self.cfg,0,2)
         self.assertEqual(first,second)
@@ -239,7 +239,7 @@ class PipelineTest(unittest.TestCase):
         from engine import RateLimited
         limited=Mock(ok=False,status_code=429,headers={'retry-after':'9'})
         words=[{'word':'Hello!','start':0,'end':1}]
-        with patch('engine.requests.post',return_value=limited) as post:
+        with patch('engine.HttpClient.post',return_value=limited) as post:
             for _ in range(2):
                 with self.assertRaises(RateLimited):self.e.translate_words(words,self.cfg,0,2)
             self.assertEqual(post.call_count,1)
@@ -302,11 +302,62 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(len(j['lines']),1);self.assertEqual(j['repair_groups'],[])
         self.assertEqual(json.loads((self.e.cache/'repair.json').read_text(encoding='utf-8'))['lines'],j['lines'])
 
+    def test_recognition_survives_engine_restart_without_recognizing_again(self):
+        self.cfg['asr']='local'
+        recognized={'words':[{'word':'Hello!','start':0,'end':1}],'segments':[]}
+        with patch.object(self.e.local_asr,'recognize',return_value=recognized) as recognize,patch.object(self.e,'translate_words',return_value=[]) as translate:
+            self.e.groq(b'recognition-cache-fixture',self.cfg,0,2)
+            self.assertEqual(recognize.call_count,1)
+            self.e.recognition_cache.clear()
+            self.e.groq(b'recognition-cache-fixture',self.cfg,0,2)
+            self.assertEqual(recognize.call_count,1)
+            self.assertEqual(translate.call_count,2,'disk recognition cache must still translate the actual words')
+        with patch.object(self.e.local_asr,'recognize',return_value=recognized) as recognize,patch.object(self.e,'translate_words',return_value=[]):
+            self.e.groq(b'different-audio',self.cfg,0,2)
+            self.assertEqual(recognize.call_count,1,'different audio cannot reuse another transcript')
+
+    def test_voice_batch_starts_before_slow_translation_batch_finishes(self):
+        self.cfg['asr']='local';primed=__import__('threading').Event()
+        words=[{'word':'hello','start':i*.05,'end':i*.05+.04} for i in range(160)]
+        def translate(batch,cfg,offset,stop):
+            if batch[0]['start']>0:self.assertTrue(primed.wait(1),'first voice should be queued before waiting for later text')
+            return [{'source':'hello','translation':'Xin chào','start':batch[0]['start'],'end':batch[-1]['end'],'complete':True}]
+        cfg={**self.cfg,'_prime_speech':lambda lines:primed.set()}
+        with patch.object(self.e.local_asr,'recognize',return_value={'words':words,'segments':[]}),patch.object(self.e,'translate_words',side_effect=translate):
+            self.assertEqual(len(self.e.groq(b'voice-pipeline-fixture',cfg,0,10)),2)
+        self.assertTrue(primed.is_set())
+
+    def test_complete_video_cache_never_opens_media_source(self):
+        from engine import digest,VERSION
+        key=digest('|'.join(['complete-cache',self.cfg['provider'],'cloud',self.cfg['language'],self.cfg['model'],'natural',VERSION,'semantic-words-v3']))
+        (self.e.cache/(key+'.json')).write_text(json.dumps({'lines':[],'windows':[0,1],'coverage':[[0,10]],'pending_from':None}))
+        with patch('engine.public_media_url',side_effect=lambda x:x),patch.object(self.e,'source',side_effect=AssertionError('must not fetch cached media')):
+            r=self.e.start({'video_id':'complete-cache','prepare_full':True,'duration':10,'sources':['https://test.douyinvod.com/a']})
+            deadline=time.monotonic()+2
+            while self.e.snapshot(r['job'])['state'] not in ('ready','error') and time.monotonic()<deadline:time.sleep(.01)
+            self.assertEqual(self.e.snapshot(r['job'])['state'],'ready')
+
+    def test_corrupt_recognition_cache_falls_back_to_actual_recognition(self):
+        from engine import digest
+        import hashlib
+        self.cfg['asr']='local';raw=b'corrupt-cache-fixture'
+        key=hashlib.sha256(raw).hexdigest()+'|zh|local'
+        cached=self.e.cache/('asr-v1-'+digest(key)+'.json')
+        cached.write_text('{"words":["broken"]}',encoding='utf-8')
+        with patch.object(self.e.local_asr,'recognize',return_value={'words':[],'segments':[]}) as recognize:
+            self.assertEqual(self.e.groq(raw,self.cfg,0,2),[]);recognize.assert_called_once()
+        self.assertTrue(self.e.valid_recognition_cache(json.loads(cached.read_text(encoding='utf-8'))))
+
+    def test_different_short_affirmative_replies_are_allowed_to_repeat(self):
+        from engine import repeated_translation_groups
+        lines=[{'source':w,'translation':'Vâng.','start':i*.2,'end':i*.2+.18} for i,w in enumerate(['是','对','好']*3)]
+        self.assertEqual(repeated_translation_groups(lines),[])
+
     def test_untranslated_chinese_is_retried_before_any_speech(self):
         def reply(text):
             r=response({'choices':[{'message':{'content':json.dumps({'lines':[{'from':0,'translation':text}]})}}]});r.status_code=200;return r
         words=[{'word':'你好。','start':0,'end':1}]
-        with patch('engine.requests.post',side_effect=[reply('你好。'),reply('Xin chào.')]) as post:
+        with patch('engine.HttpClient.post',side_effect=[reply('你好。'),reply('Xin chào.')]) as post:
             lines=self.e.translate_words(words,self.cfg,0,2)
         self.assertEqual(lines[0]['translation'],'Xin chào.');self.assertEqual(post.call_count,2)
         with patch.object(self.e.speech_pool,'submit') as submit:

@@ -157,7 +157,7 @@ class Handler(BaseHTTPRequestHandler):
             with engine.guard:
                 latest_job=next((jid for jid,j in reversed(engine.jobs.items()) if not j.get('prefetch') and not j['cancel'].is_set()),None)
             with playback_guard:playback=dict(playback_state)
-            return self.reply(200, {'ready': bool(settings.get(field)), 'name': 'Ligter Voice', 'version': VERSION, 'voice':settings['voice'], 'speak':settings['speak'], 'provider':settings['provider'],'preload_all':settings.get('preload_all',False),'latest_job':latest_job,'tts':settings.get('tts','local'),'voice_state':engine.local_speech.state,'subtitles':settings.get('subtitles',True),'translation_style':settings.get('translation_style','natural'),'playback_mode':'smooth','playback':playback})
+            return self.reply(200, {'ready': bool(settings.get(field)), 'name': 'Ligter Voice', 'version': VERSION, 'voice':settings['voice'], 'speak':settings['speak'], 'provider':settings['provider'],'preload_all':settings.get('preload_all',False),'latest_job':latest_job,'tts':settings.get('tts','local'),'voice_state':engine.local_speech.state,'asr_state':engine.local_asr.state,'subtitles':settings.get('subtitles',True),'translation_style':settings.get('translation_style','natural'),'playback_mode':'smooth','playback':playback})
         if self.path != '/audio':
             try:
                 size = int(self.headers.get('Content-Length', 0))

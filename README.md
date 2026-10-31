@@ -2,7 +2,7 @@
 
 Ứng dụng Windows và tiện ích Chrome để dịch tiếng Trung/Anh sang tiếng Việt khi xem video Douyin web, hiển thị phụ đề theo thời gian và thuyết minh nam/nữ.
 
-**Bản hiện tại:** app Windows 0.8.4; tiện ích Chrome 0.8.3. Bản Android cho Samsung Tab chưa được triển khai.
+**Bản hiện tại:** app Windows 0.8.5; tiện ích Chrome 0.8.3. Bản Android cho Samsung Tab chưa được triển khai.
 
 ## Chức năng
 
@@ -26,8 +26,19 @@ Chạy `python companion.py` để mở trung tâm xử lý; `build.ps1` đóng 
 
 Xem [hướng dẫn sử dụng](HUONG-DAN.md) để biết chi tiết.
 
-## Kiểm thử bản 0.8.4
+## Kiểm thử bản 0.8.5
 
-58 kiểm thử Python và 8 bộ JavaScript đã qua trong môi trường phát triển Windows, gồm xem thẳng và tua lùi. Kiểm thử mô phỏng không thay thế việc nghe kiểm chứng toàn bộ video thực trên Chrome.
+65 kiểm thử Python và 8 bộ JavaScript đã qua trong môi trường phát triển Windows, gồm xem thẳng và tua lùi. Kiểm thử mô phỏng không thay thế việc nghe kiểm chứng toàn bộ video thực trên Chrome.
 
 Khóa API, cấu hình cá nhân, cache, lịch sử video, model, EXE và dữ liệu kiểm thử của người dùng không được đưa lên repo. Giấy phép các thành phần bên thứ ba nằm trong `licenses`; chưa cấp giấy phép riêng cho toàn bộ dự án.
+
+## Tối ưu tốc độ 0.8.5
+
+- Nạp sẵn bộ nhận diện tại máy khi mở app, bên cạnh bộ giọng đã được nạp sẵn; không tải model từ mạng.
+- Dùng lại kết nối HTTP theo worker, không dùng chung session có thể thay đổi giữa các luồng.
+- Lưu kết quả nhận diện theo hash audio/cấu hình để không nhận diện lại sau khi khởi động lại hoặc thử lại bản dịch. Cache hỏng được bỏ qua để nhận diện lại.
+- Tạo giọng của nhóm câu đã chốt trong lúc nhóm dịch tiếp theo còn chạy; không thêm lượt gọi AI để làm bước này.
+- Video có cache hoàn chỉnh không mở nguồn media hoặc chạy ASR lại. Chỉ xử lý video người dùng chọn, không nạp video kế bên.
+- Giữ bộ chặn bản dịch suy biến nhưng cho phép các câu đáp ngắn đồng nghĩa lặp thật.
+
+Mẫu kiểm tra cục bộ cùng phần audio Douyin 7 giây: 0.8.4 khoảng 21,99 giây, 0.8.5 khoảng 6,85 giây sau khi nạp trước model, xem lại cache khoảng 0,08 giây. Thời gian nạp trước được đo riêng; mẫu có đoạn nhận diện chưa xác minh. Đây là một mẫu, chưa gồm mạng/CDN trình duyệt và không chứng minh mọi thoại đầy đủ hoặc mọi video nhanh tương tự.

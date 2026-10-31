@@ -6,14 +6,33 @@ from local_speech import HOME
 
 
 class LocalRecognizer:
-    def __init__(self):self.model=None;self.lock=threading.Lock()
+    def __init__(self):
+        self.model=None;self.lock=threading.RLock();self.state='cold'
 
-    def recognize(self,raw,language):
+    def warm(self):
         with self.lock:
-            if self.model is None:
+            if self.model is not None:return
+            self.state='loading'
+            try:
                 from faster_whisper import WhisperModel
                 self.model=WhisperModel(str(HOME/'models'/'Whisper-small'),device='cpu',compute_type='int8',
                                         cpu_threads=4,num_workers=1,local_files_only=True)
+                self.state='ready'
+            except Exception:
+                self.state='error';raise
+
+    def start(self):
+        with self.lock:
+            if self.state!='cold':return
+            self.state='loading'
+        def load():
+            try:self.warm()
+            except Exception:pass
+        threading.Thread(target=load,daemon=True,name='asr-warmup').start()
+
+    def recognize(self,raw,language):
+        with self.lock:
+            self.warm()
             import numpy as np
             with wave.open(io.BytesIO(raw)) as source:
                 if source.getframerate()!=16000 or source.getnchannels()!=1 or source.getsampwidth()!=2:

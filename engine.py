@@ -25,8 +25,9 @@ from local_speech import LocalSpeech
 from local_asr import LocalRecognizer
 from browser_media import BrowserMedia
 from progress import job_progress
+from http_client import HttpClient
 
-VERSION = '0.8.4'
+VERSION = '0.8.5'
 MEDIA_LIMIT = 90 * 1024 * 1024
 DOMAINS = ('douyinvod.com', 'douyin.com', 'zjcdn.com', 'bytecdn.cn', 'bytecdn.com', 'byteimg.com', 'bytedance.com', 'ixigua.com', 'tiktokcdn.com', 'akamaized.net', 'bilivideo.com', 'hdslb.com')
 
@@ -126,6 +127,8 @@ def repeated_translation_groups(lines):
     def check():
         if len(run)<3:return
         sources={normalize(x.get('source','')) for x in run}
+        replies={'是','是的','对','對','好','好的','嗯','yes','yeah','okay','ok','sure'}
+        if sources and sources.issubset(replies):return
         target=normalize(run[0].get('translation',''))
         fragmented=sum(x['end']-x['start']<.6 for x in run)>=len(run)/2
         if len(sources)>=3 and (len(target.split())>=4 or len(run)>=6 and fragmented):groups.append(list(run))
@@ -263,6 +266,7 @@ class Engine:
         self.local_speech = LocalSpeech(events)
         self.local_asr = LocalRecognizer()
         self.browser_media = BrowserMedia()
+        self.http=HttpClient()
         self.recognition_cache={}
         self.translation_cache={}
         self.translation_cooldown=0
@@ -325,7 +329,7 @@ class Engine:
             key = digest('|'.join([video_id,cfg.get('provider','groq'),cfg.get('asr','cloud'),cfg.get('language','zh'),cfg.get('model',''),cfg.get('translation_style','natural'),VERSION,'semantic-words-v3']))
             cached = self.cache / (key + '.json')
             if not cached.exists():
-                for previous_version in ('0.8.3','0.8.2'):
+                for previous_version in ('0.8.4','0.8.3','0.8.2'):
                     legacy=digest('|'.join([video_id,cfg.get('provider','groq'),cfg.get('asr','cloud'),cfg.get('language','zh'),cfg.get('model',''),cfg.get('translation_style','natural'),previous_version,'semantic-words-v3']))
                     previous=self.cache/(legacy+'.json')
                     if previous.exists():cached=previous;break
@@ -427,6 +431,9 @@ class Engine:
             goal=min(5,j['duration'])
             uncertain_start=any(a<goal and b>0 for a,b in j['metrics'].get('uncertain_asr_windows',[]))
             result['progress'].update(playable_seconds=round(prefix,2),can_play=j['state'] not in ('error','cancelled') and (result['progress']['ready'] or goal>0 and prefix>=goal-.05 and not uncertain_start))
+            if result['progress']['can_play']:
+                value=j['metrics'].setdefault('first_playable_observed_seconds',round(time.monotonic()-j['created'],3))
+                result['metrics']['first_playable_observed_seconds']=value
             cfg=self.cfg()
             result.update(subtitles=cfg.get('subtitles',True),bilingual=cfg.get('bilingual',True),playback_mode=cfg.get('playback_mode','smooth'))
             return result
@@ -536,12 +543,35 @@ class Engine:
                 proc.kill()
                 proc.communicate()
 
+    @staticmethod
+    def valid_recognition_cache(value):
+        if not isinstance(value,dict):return False
+        try:
+            for field,limit in (('words',5000),('segments',2000)):
+                entries=value.get(field) or []
+                if not isinstance(entries,list) or len(entries)>limit:return False
+                for entry in entries:
+                    if not isinstance(entry,dict):return False
+                    a,b=float(entry['start']),float(entry['end'])
+                    if not math.isfinite(a) or not math.isfinite(b) or not 0<=a<=b<=7200:return False
+                    if not isinstance(entry.get('word',entry.get('text','')),str):return False
+            return isinstance(value.get('text',''),str)
+        except (TypeError,ValueError,KeyError):return False
+
     def groq(self,raw,cfg,offset,stop):
         metrics=cfg.get('_metrics',{})
         phase=cfg.get('_phase',lambda value:None);phase('recognize')
         asr_started=time.monotonic()
         recognition_key=hashlib.sha256(raw).hexdigest()+'|'+cfg.get('language','auto')+'|'+cfg.get('asr','cloud')
         remembered=self.recognition_cache.get(recognition_key)
+        disk_cache=self.cache/('asr-v1-'+digest(recognition_key)+'.json')
+        if remembered is None and disk_cache.exists():
+            try:
+                if disk_cache.stat().st_size<4*1024*1024:
+                    candidate=json.loads(disk_cache.read_text(encoding='utf-8'))
+                    if self.valid_recognition_cache(candidate):
+                        remembered=candidate;metrics['asr_disk_cached']=True
+            except (OSError,ValueError):pass
         headers={'Authorization':'Bearer '+cfg['key']}
         params={'model':'whisper-large-v3-turbo','response_format':'verbose_json','temperature':'0','timestamp_granularities[]':['word','segment']}
         if cfg.get('language','auto')!='auto':
@@ -554,7 +584,7 @@ class Engine:
                 local_result=self.local_asr.recognize(raw,cfg.get('language','auto'));break
             if attempt:params['model']='whisper-large-v3'
             try:
-                r=requests.post('https://api.groq.com/openai/v1/audio/transcriptions',headers=headers,files={'file':('audio.wav',raw,'audio/wav')},data=params,timeout=(5,12))
+                r=self.http.post('https://api.groq.com/openai/v1/audio/transcriptions',headers=headers,files={'file':('audio.wav',raw,'audio/wav')},data=params,timeout=(5,12))
                 if r.status_code not in (500,502,503,504):break
                 r.close()
             except requests.RequestException:
@@ -570,6 +600,11 @@ class Engine:
             window=[round(offset,3),round(stop,3)]
             uncertain=metrics.setdefault('uncertain_asr_windows',[])
             if window not in uncertain:uncertain.append(window)
+        if remembered is None:
+            try:
+                temporary=disk_cache.with_name(disk_cache.name+'.'+secrets.token_hex(4)+'.tmp')
+                temporary.write_text(json.dumps(result,ensure_ascii=False),encoding='utf-8');temporary.replace(disk_cache)
+            except OSError:pass
         self.recognition_cache[recognition_key]=result
         while len(self.recognition_cache)>24:self.recognition_cache.pop(next(iter(self.recognition_cache)))
         metrics['last_asr_seconds']=round(time.monotonic()-asr_started,3)
@@ -597,7 +632,14 @@ class Engine:
                 batches.append(words[index:end]);index=end
             translation_started=time.monotonic()
             futures=[self.translation_pool.submit(self.translate_words,batch,cfg,offset,stop) for batch in batches]
-            lines=[line for future in futures for line in future.result()]
+            lines=[]
+            for future in futures:
+                batch_lines=future.result()
+                # Start validated, complete voices while slower text batches are
+                # still translating; no partial text is exposed to playback.
+                prime=cfg.get('_prime_speech')
+                if prime:prime([x for x in batch_lines if x.get('complete',True)])
+                lines.extend(batch_lines)
             metrics['last_translation_seconds']=round(time.monotonic()-translation_started,3)
             return lines
         segments=sentence_segments(result,offset,stop)
@@ -614,7 +656,7 @@ class Engine:
                              {'role':'user','content':json.dumps([{'id':i,'text':s['source']} for i,s in enumerate(segments)],ensure_ascii=False)}]}
         if model.startswith('qwen/'):
             payload.update(reasoning_effort='none',reasoning_format='hidden')
-        r=requests.post('https://api.groq.com/openai/v1/chat/completions',headers=headers,json=payload,timeout=(10,35))
+        r=self.http.post('https://api.groq.com/openai/v1/chat/completions',headers=headers,json=payload,timeout=(10,35))
         api_check(r)
         try:
             content=json.loads(r.json()['choices'][0]['message']['content'])
@@ -668,7 +710,7 @@ class Engine:
             remaining=self.translation_cooldown-time.monotonic()
             if remaining>0:raise RateLimited(remaining)
             try:
-                response=requests.post('https://api.groq.com/openai/v1/chat/completions',
+                response=self.http.post('https://api.groq.com/openai/v1/chat/completions',
                                        headers={'Authorization':'Bearer '+cfg['key']},json=payload,timeout=(5,12))
             except requests.RequestException:
                 if attempt==2:raise ValueError('Dịch vụ dịch chưa phản hồi. Bản lời gốc đã được giữ lại, hãy bấm Thử lại.')
@@ -739,6 +781,12 @@ class Engine:
         if repeated_translation_groups(lines):raise ValueError('Dịch vụ trả nhiều câu dịch trùng cho lời khác nhau; cần dịch lại.')
         return lines
 
+    def prime_speech(self,j,lines):
+        if j['cancel'].is_set() or not j['cfg'].get('speak',True):return
+        for line in lines:
+            if j['cancel'].is_set():break
+            self.prefetch_speech(line['translation'],j['cfg'].get('voice','vi-VN-NamMinhNeural'),j['cancel'])
+
     def prepare_nearby(self,j):
         if not j['cfg'].get('speak',True):
             self.update(j,voice_prepared=True)
@@ -781,10 +829,10 @@ class Engine:
         try:
             self.checked(j)
             self.repair_cached_translation(j)
-            path=self.source(j)
             self.update(j,phase='audio',message='Đang đọc phần audio đầu tiên…')
             duration=j['duration']
             if not duration:
+                path=self.source(j)
                 command=[imageio_ffmpeg.get_ffmpeg_exe(),'-hide_banner','-rw_timeout','15000000','-i',str(path)]
                 p=subprocess.run(command,capture_output=True,timeout=20,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
                 m=re.search(r'Duration: (\d+):(\d+):(\d+\.\d+)',p.stderr.decode(errors='replace'))
@@ -843,6 +891,7 @@ class Engine:
                 decode_end=min(duration,end+(2 if j.get('fast_prepare') else 3))
                 self.update(j,state='working',phase='audio',processing_from=decode_start,processing_to=decode_end,message=f'Đang lấy audio {int(start//60):02}:{int(start%60):02}…')
                 try:
+                    if path is None:path=self.source(j)
                     raw=self.decode(path,decode_start,decode_end-decode_start,j)
                     media_failures=0
                 except ValueError:
@@ -855,7 +904,7 @@ class Engine:
                 j['metrics'].setdefault('first_audio_seconds',round(time.monotonic()-j['created'],2))
                 self.checked(j)
                 self.update(j,phase='recognize')
-                cfg={**j['cfg'],'_metrics':j['metrics'],'_phase':lambda phase:self.update(j,phase=phase),'title':j['title'],'context':[{'source':x['source'],'translation':x['translation']} for x in j['lines'] if x['end']<=start][-3:]}
+                cfg={**j['cfg'],'_prime_speech':lambda batch:self.prime_speech(j,batch),'_metrics':j['metrics'],'_phase':lambda phase:self.update(j,phase=phase),'title':j['title'],'context':[{'source':x['source'],'translation':x['translation']} for x in j['lines'] if x['end']<=start][-3:]}
                 try:
                     lines=self.transcribe(raw,cfg,decode_start,decode_end)
                 except RateLimited as limit:
@@ -987,6 +1036,7 @@ class Engine:
         return {'message':'Đã lưu ghi chú và phụ đề SRT trong '+str(folder)}
 
     def close(self):
+        self.http.close()
         for j in list(self.jobs.values()):
             j['cancel'].set()
         self.pool.shutdown(wait=False,cancel_futures=True)
