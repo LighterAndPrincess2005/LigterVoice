@@ -364,6 +364,38 @@ class PipelineTest(unittest.TestCase):
             with self.assertRaises(ValueError):self.e.prefetch_speech('Xin chào 你好','vi-VN-NamMinhNeural')
             submit.assert_not_called()
 
+    def test_groq_json_generation_400_uses_translation_retry(self):
+        invalid = response({'error': {'code': 'json_validate_failed'}})
+        invalid.status_code = 400
+        translated = response({'choices': [{'message': {'content': json.dumps({
+            'lines': [{'from': 0, 'translation': 'Xin chào.'}],
+        })}}]})
+        translated.status_code = 200
+        words = [{'word': '你好。', 'start': 0, 'end': 1}]
+        with patch('engine.HttpClient.post', side_effect=[invalid, translated]) as post:
+            lines = self.e.translate_words(words, self.cfg, 40, 42)
+        self.assertEqual(post.call_count, 2)
+        self.assertEqual(post.call_args.kwargs['json']['model'], 'openai/gpt-oss-20b')
+        self.assertEqual([(line['start'], line['translation']) for line in lines], [(40, 'Xin chào.')])
+
+    def test_invalid_boundaries_retry_with_fixed_clauses(self):
+        def reply(lines):
+            r=response({'choices':[{'message':{'content':json.dumps({'lines':lines})}}]})
+            r.status_code=200
+            return r
+        words=[{'word':'你好。','start':0,'end':1},{'word':'谢谢。','start':1.2,'end':2}]
+        merged=reply([{'from':0,'translation':'Xin chào và cảm ơn.'}])
+        fixed=reply([{'from':0,'translation':'Xin chào.'},{'from':1,'translation':'Cảm ơn.'}])
+        requests=[]
+        def post(*args,**kwargs):
+            requests.append(json.loads(kwargs['json']['messages'][-1]['content']) if len(requests)==2 else None)
+            return fixed if len(requests)==3 else merged
+        with patch('engine.HttpClient.post',side_effect=post):
+            lines=self.e.translate_words(words,self.cfg,40,43)
+        self.assertEqual(requests[-1]['clauses'],[{'from':0,'text':'你好。'},{'from':1,'text':'谢谢。'}])
+        self.assertEqual([(x['start'],x['end'],x['translation']) for x in lines],
+                         [(40,41,'Xin chào.'),(41.2,42,'Cảm ơn.')])
+
     def test_unchanged_english_and_non_text_are_not_valid_translations(self):
         for text,source in [('This is my home.','This is my home.'),(None,'hello'),('欢迎 John','欢迎')]:
             with self.assertRaises(ValueError):validate_translation(text,source)

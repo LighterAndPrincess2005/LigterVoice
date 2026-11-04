@@ -70,10 +70,22 @@
    window.postMessage({type:'LIGTER_REQUEST_MEDIA',id:identityKey},location.origin);await new Promise(r=>setTimeout(r,120));
    if(token!==sequence||!enabled)return;info=clips.get(identityKey);
   }
+  if(info&&!info.caption_urls?.length){
+   window.postMessage({type:'LIGTER_REQUEST_MEDIA',id:identityKey},location.origin);
+   await new Promise(r=>setTimeout(r,120));if(token!==sequence||!enabled)return;
+   info=clips.get(identityKey)||info;
+  }
+  const usable=t=>['captions','subtitles'].includes(t.kind)&&(!(t.language||t.srclang)||/^(zh|cmn|en)(-|_|$)/i.test(t.language||t.srclang));
+  const track=[...(v.textTracks||[])].find(t=>usable(t)&&t.cues?.length);
+  const rows=Array.from(track?.cues||[],c=>[c.startTime,c.endTime,c.getCueAsHTML?.().textContent||c.text]);
+  const caption_cues=new TextEncoder().encode(JSON.stringify(rows)).length<3500?rows:[];
+  const caption_urls=[...new Set([...(info?.caption_urls||[]),...[...v.querySelectorAll('track[src]')].filter(usable).map(t=>t.src)])]
+   .filter(url=>url.startsWith('https://')&&url.length<3000).slice(0,2);
+  if(!info&&(caption_cues.length||caption_urls.length))info={sources:[],duration:v.duration};
   if(!info){critical='Chưa lấy được audio video. Đang thử lại; video gốc vẫn phát.';show();retry(token);return}
   try{
-   const r=await send('direct-start',{video_id:identityKey,sources:info.sources,title:info.title||document.title,duration:info.duration||v.duration,position:anchor,url:location.href});
-   if(token!==sequence||!enabled)return;job=r.job;critical='Đang nhận diện lời nói…';poll(token);
+   const r=await send('direct-start',{video_id:identityKey,sources:info.sources,caption_urls,caption_cues,title:info.title||document.title,duration:info.duration||v.duration,position:anchor,url:location.href});
+   if(token!==sequence||!enabled)return;job=r.job;critical='Đang chuẩn bị lời dịch…';poll(token);
   }catch(error){if(token===sequence&&enabled){critical=error.message;restore();show();retry(token)}}
  }
  async function poll(token){

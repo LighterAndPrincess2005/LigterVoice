@@ -15,6 +15,7 @@ __pycache__/
 *.dll
 *.mp3
 *.wav
+!/voice-previews/*.wav
 *.mp4
 *.zip
 _internal/

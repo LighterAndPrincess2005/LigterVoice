@@ -9,6 +9,9 @@ import wave
 import imageio_ffmpeg
 
 
+FEMALE_PRESETS = ('baotrang','hamy','kimoanh','maichi')
+
+
 HOME = Path(sys.executable).parent if getattr(sys,'frozen',False) else Path(__file__).parent
 
 
@@ -68,7 +71,7 @@ class LocalSpeech:
             except ValueError:pass
         threading.Thread(target=load,daemon=True,name='voice-warmup').start()
 
-    def render(self,text,voice,path,cancel=None):
+    def render(self,text,voice,path,cancel=None,female_preset=None):
         # One inference at a time avoids competing for DDR memory bandwidth.
         with self.lock:
             def check():
@@ -80,7 +83,7 @@ class LocalSpeech:
             import numpy as np
             from zerotts import normalize_vi_text
             from zerotts.chunking import chunk_text,normalize_punctuation,clean_segment_punctuation
-            selected='quangminh' if 'NamMinh' in voice else 'baotrang'
+            selected='quangminh' if 'NamMinh' in voice else (female_preset or 'baotrang')
             timing={};started=time.monotonic()
             parts=chunk_text(normalize_punctuation(normalize_vi_text(text)),max_chunk_sec=6)
             generated=[]
@@ -99,6 +102,11 @@ class LocalSpeech:
             with wave.open(wav,'wb') as f:
                 f.setnchannels(1);f.setsampwidth(2);f.setframerate(self.model.sample_rate)
                 f.writeframes((np.clip(samples,-1,1)*32767).astype('<i2').tobytes())
+            if path.suffix=='.wav':
+                tmp=path.with_suffix('.tmp')
+                tmp.write_bytes(wav.getvalue())
+                tmp.replace(path)
+                return path
             tmp=path.with_suffix('.encoding.mp3')
             command=[imageio_ffmpeg.get_ffmpeg_exe(),'-hide_banner','-loglevel','error','-y','-i','pipe:0',
                      '-codec:a','libmp3lame','-q:a','4',str(tmp)]

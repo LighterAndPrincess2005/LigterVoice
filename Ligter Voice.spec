@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('extension', 'extension'), ('licenses', 'licenses')]
+datas = [('extension', 'extension'), ('licenses', 'licenses'), ('voice-previews', 'voice-previews')]
 binaries = []
 hiddenimports = []
 tmp_ret = collect_all('imageio_ffmpeg')
@@ -33,6 +33,7 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
+    [('X utf8', None, 'OPTION')],  # Voice metadata contains Vietnamese UTF-8.
     [],
     exclude_binaries=True,
     name='Ligter Voice',

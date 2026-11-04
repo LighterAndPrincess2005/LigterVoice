@@ -3,7 +3,7 @@ import unittest
 import wave
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
-from local_asr import LocalRecognizer
+from local_asr import LocalRecognizer, has_recognition_loop
 
 
 def wav(level=1000):
@@ -44,6 +44,19 @@ class RecognitionQualityTest(unittest.TestCase):
         r=self.recognizer([[],[segment(-1.5)]])
         result=r.recognize(wav(),'zh')
         self.assertEqual(result['words'],[]);self.assertTrue(result['uncertain_audio'])
+
+    def test_recognition_loop_is_retried_and_never_emitted(self):
+        loop=segment()
+        loop.text='everything, '*74
+        r=self.recognizer([[loop],[segment()]])
+        result=r.recognize(wav(),'auto')
+        self.assertEqual([word['word'] for word in result['words']],['你好'])
+        self.assertTrue(result['recovery_attempted'])
+        self.assertFalse(result['uncertain_audio'])
+
+    def test_short_repeated_dialogue_is_preserved(self):
+        self.assertFalse(has_recognition_loop('No, no, no! Wait.'))
+        self.assertTrue(has_recognition_loop('谢谢，'*12))
 
     def test_silence_does_not_trigger_extra_recognition(self):
         r=self.recognizer([[]]);result=r.recognize(wav(0),'auto')

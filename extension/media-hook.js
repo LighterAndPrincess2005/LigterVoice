@@ -2,7 +2,7 @@
 (()=>{
  if(window.__ligterMediaHook)return;window.__ligterMediaHook=true;
  const seen=new Map(),sizes=new Map();
- const urls=value=>{if(typeof value==='string')return value.startsWith('https://')?[value]:[];if(Array.isArray(value))return value.flatMap(urls);if(value&&typeof value==='object')return ['url_list','urlList','main_url','backup_url','fallback_url','src'].flatMap(k=>urls(value[k]));return []};
+ const urls=value=>{if(typeof value==='string')return value.startsWith('https://')?[value]:[];if(Array.isArray(value))return value.flatMap(urls);if(value&&typeof value==='object')return ['url_list','urlList','main_url','backup_url','fallback_url','src','url','Url'].flatMap(k=>urls(value[k]));return []};
  function clip(item){
   const id=String(item.aweme_id||item.awemeId||'');if(!/^\d{15,22}$/.test(id))return;
   const v=item.video||{};const tracks=v.bit_rate_audio||v.bitRateAudioList||[];
@@ -12,7 +12,14 @@
   const videos=[...new Set([...rates.flatMap(a=>urls(a.play_addr||a.playAddr)),...urls(v.play_addr||v.playAddr)])].filter(x=>x.length<5000).slice(0,5);
   const sources=[...new Set([...audio,...videos])].filter(x=>x.length<5000).slice(0,5);
   const duration=Number(v.duration||item.duration||0)/1000;
-  if(sources.length){const c={id,sources,videos,duration,title:String(item.desc||item.description||'').slice(0,300)};seen.set(id,c);if(seen.size>100)seen.delete(seen.keys().next().value);window.postMessage({type:'LIGTER_MEDIA',clips:[c]},location.origin)}
+  const cla=v.cla_info||v.claInfo||{};
+  const captions=[cla.caption_infos,cla.captionInfos,v.subtitle_infos,v.subtitleInfos,v.subtitle?.subtitleInfos,item.subtitle_infos]
+    .flatMap(list=>Array.isArray(list)?list:[])
+    .filter(track=>{const lang=String(track?.lang||track?.language_code||track?.LanguageCodeName||track?.languageCodeName||'');return !lang||/^(zh|cmn|en)(-|_|$)/i.test(lang)})
+    .sort((a,b)=>Number(/^(zh|cmn)/i.test(String(b.lang||b.LanguageCodeName||b.language_code||'')))-Number(/^(zh|cmn)/i.test(String(a.lang||a.LanguageCodeName||a.language_code||''))))
+    .flatMap(urls).filter(url=>url.length<4000);
+  const caption_urls=[...new Set([...captions,...(seen.get(id)?.caption_urls||[])])].slice(0,2);
+  if(sources.length||caption_urls.length){const c={id,sources:sources.length?sources:seen.get(id)?.sources||[],videos,duration,caption_urls,title:String(item.desc||item.description||'').slice(0,300)};seen.set(id,c);if(seen.size>100)seen.delete(seen.keys().next().value);window.postMessage({type:'LIGTER_MEDIA',clips:[c]},location.origin)}
  }
  function scan(value,depth=0){if(!value||typeof value!=='object'||depth>9)return;if(value.aweme_id||value.awemeId){clip(value);return}for(const x of Object.values(value))scan(x,depth+1)}
  const relevant=url=>/\/aweme\/v\d+\/web\//.test(String(url));
@@ -44,7 +51,7 @@
  const originalOpen=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(method,url,...args){if(relevant(url))this.addEventListener('load',()=>{try{scan(this.responseType==='json'?this.response:JSON.parse(this.responseText))}catch{}});return originalOpen.call(this,method,url,...args)};
  function initial(){for(const id of ['RENDER_DATA','__UNIVERSAL_DATA_FOR_REHYDRATION__']){const raw=document.getElementById(id)?.textContent;if(raw){try{scan(JSON.parse(raw))}catch{try{scan(JSON.parse(decodeURIComponent(raw)))}catch{}}}}}
  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',initial,{once:true});else initial();
- window.addEventListener('message',e=>{if(e.source!==window)return;if(e.data?.type==='LIGTER_RANGE_REQUEST'){readRange(e.data);return}if(e.data?.type!=='LIGTER_REQUEST_MEDIA')return;const id=String(e.data.id||'');if(seen.has(id)){window.postMessage({type:'LIGTER_MEDIA',clips:[seen.get(id)]},location.origin);return}if(!/^\d{15,22}$/.test(id))return;
-  const element=document.querySelector(`[data-e2e-vid="${id}"]`);if(!element)return;const key=Object.keys(element).find(x=>x.startsWith('__reactFiber$'));let fiber=key?element[key]:null;for(let i=0;fiber&&i<28;i++,fiber=fiber.return){scan(fiber.memoizedProps,5);if(seen.has(id))break}
+ window.addEventListener('message',e=>{if(e.source!==window)return;if(e.data?.type==='LIGTER_RANGE_REQUEST'){readRange(e.data);return}if(e.data?.type!=='LIGTER_REQUEST_MEDIA')return;const id=String(e.data.id||'');if(seen.has(id)){window.postMessage({type:'LIGTER_MEDIA',clips:[seen.get(id)]},location.origin);if(seen.get(id).caption_urls.length)return}if(!/^\d{15,22}$/.test(id))return;
+  const element=document.querySelector(`[data-e2e-vid="${id}"]`);if(!element)return;const key=Object.keys(element).find(x=>x.startsWith('__reactFiber$'));let fiber=key?element[key]:null;for(let i=0;fiber&&i<28;i++,fiber=fiber.return){scan(fiber.memoizedProps,5);if(seen.get(id)?.caption_urls?.length)break}
  });
 })();

@@ -1,8 +1,20 @@
 """CPU fallback for network ASR failures, with real word-level timestamps."""
 import io
+import re
 import threading
 import wave
 from local_speech import HOME
+
+
+def has_recognition_loop(text):
+    """Detect a segment made almost entirely of a short repeated phrase."""
+    # Split Han runs individually so punctuation-free repeats can be checked.
+    tokens=re.findall(r'[\u3400-\u9fff]|[^\W_\u3400-\u9fff]+',str(text).casefold())
+    for width in range(1,min(4,len(tokens)//8)+1):
+        phrase=tokens[:width]
+        if sum(token==phrase[i%width] for i,token in enumerate(tokens))>=len(tokens)*.95:
+            return True
+    return False
 
 
 class LocalRecognizer:
@@ -45,6 +57,9 @@ class LocalRecognizer:
                 segments,info=self.model.transcribe(samples,**options)
                 out={'words':[],'segments':[],'language':info.language}
                 for segment in segments:
+                    if has_recognition_loop(segment.text):
+                        out['uncertain_audio']=True
+                        continue
                     confidence=float(segment.avg_logprob);no_speech=float(segment.no_speech_prob)
                     if recovery and (confidence<-.8 or float(segment.compression_ratio)>2.4 or no_speech>.8 and confidence<-.3):continue
                     out['segments'].append({'start':segment.start,'end':segment.end,'text':segment.text,
@@ -54,10 +69,10 @@ class LocalRecognizer:
                 return out
             result=decode(True)
             energy=float(np.sqrt(np.mean(samples*samples))) if len(samples) else 0
-            if not result['words'] and not any(s['text'].strip() for s in result['segments']) and energy>.001:
+            if not result['words'] and not any(s['text'].strip() for s in result['segments']) and (energy>.001 or result.get('uncertain_audio')):
                 # Audit an empty recognition once without the speech gate. Low
                 # confidence results remain unresolved rather than becoming dialogue.
                 recovered=decode(False,True);recovered['recovery_attempted']=True
-                recovered['uncertain_audio']=not bool(recovered['words'] or recovered['segments'])
+                recovered['uncertain_audio']=bool(recovered.get('uncertain_audio')) or not bool(recovered['words'] or recovered['segments'])
                 result=recovered
             return result
